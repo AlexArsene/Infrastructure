@@ -1,18 +1,50 @@
 pipeline {
   agent any
   stages {
-    stage('Build') {
-      steps { sh 'docker build -t frontend-app:v001 .' }
+    stage('Checkout') {
+      steps {
+        git 'https://github.com/AlexArsene/Frontend-UI.git'
+      }
     }
-    stage('Test') {
-      steps { sh 'docker run --rm -d -p 80:80 --name frontend-test frontend-app:v001 && sleep 10 && curl --fail http://localhost:80 || exit 1' }
+    stage('Build Docker Images') {
+      steps {
+        sh 'docker build -t frontend-app:blue ./Frontend-UI'
+        sh 'docker build -t frontend-app:green ./Frontend-UI'
+      }
     }
-    stage('Deploy Staging') {
-      steps { sh 'ssh deploy@192.168.0.242 "docker pull frontend-app:v001 && docker stop frontend || true && docker rm frontend || true && docker run -d --name frontend -p 80:80 frontend-app:v001"' }
+    stage('Deploy to Staging') {
+      steps {
+        sh 'ssh alex@192.168.0.242 "docker stop frontend-blue || true; docker rm frontend-blue || true"'
+        sh 'ssh alex@192.168.0.242 "docker stop frontend-green || true; docker rm frontend-green || true"'
+        sh 'ssh alex@192.168.0.242 "docker run -d --name frontend-blue -p 4001:4000 frontend-app:blue"'
+        sh 'ssh alex@192.168.0.242 "docker run -d --name frontend-green -p 4002:4000 frontend-app:green"'
+      }
     }
-    stage('Deploy Production') {
-      when { branch 'production' }
-      steps { sh 'ssh deploy@192.168.0.79 "docker pull frontend-app:v001 && docker stop frontend || true && docker rm frontend || true && docker run -d --name frontend -p 80:80 frontend-app:v001"' }
+    stage('Test on Staging') {
+      steps {
+        sh 'ssh alex@192.168.0.242 "bash -s" < ./scripts/test-frontend.sh'
+      }
+    }
+    stage('Deploy to Production') {
+      steps {
+        sh 'ssh alex@192.168.0.79 "docker stop frontend-blue || true; docker rm frontend-blue || true"'
+        sh 'ssh alex@192.168.0.79 "docker stop frontend-green || true; docker rm frontend-green || true"'
+        sh 'ssh alex@192.168.0.79 "docker run -d --name frontend-blue -p 4001:4000 frontend-app:blue"'
+        sh 'ssh alex@192.168.0.79 "docker run -d --name frontend-green -p 4002:4000 frontend-app:green"'
+      }
+    }
+    stage('Health-check & Switch') {
+      steps {
+        script {
+          def ok = sh(script: 'ssh alex@192.168.0.79 "bash -s" < ./scripts/test-frontend.sh', returnStatus: true)
+          if (ok == 0) {
+            sh 'ssh alex@192.168.0.79 "bash -s" < ./nginx/switch-frontend.sh green'
+          } else {
+            sh 'ssh alex@192.168.0.79 "bash -s" < ./nginx/switch-frontend.sh blue'
+          }
+        }
+      }
     }
   }
 }
+

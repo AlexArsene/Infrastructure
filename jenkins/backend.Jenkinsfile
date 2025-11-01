@@ -1,18 +1,50 @@
 pipeline {
   agent any
   stages {
-    stage('Build') {
-      steps { sh 'docker build -t backend-app:v001 .' }
+    stage('Checkout') {
+      steps {
+        git 'https://github.com/AlexArsene/Backend-API.git'
+      }
     }
-    stage('Test') {
-      steps { sh 'docker run --rm -d -p 3000:3000 --name backend-test backend-app:v001 && sleep 10 && curl --fail http://localhost:3000/contacts || exit 1' }
+    stage('Build Docker Images') {
+      steps {
+        sh 'docker build -t backend-app:blue ./Backend-API'
+        sh 'docker build -t backend-app:green ./Backend-API'
+      }
     }
-    stage('Deploy Staging') {
-      steps { sh 'ssh deploy@192.168.0.242 "docker pull backend-app:v001 && docker stop backend || true && docker rm backend || true && docker run -d --name backend -p 3000:3000 backend-app:v001"' }
+    stage('Deploy to Staging') {
+      steps {
+        sh 'ssh alex@192.168.0.242 "docker stop backend-blue || true; docker rm backend-blue || true"'
+        sh 'ssh alex@192.168.0.242 "docker stop backend-green || true; docker rm backend-green || true"'
+        sh 'ssh alex@192.168.0.242 "docker run -d --name backend-blue -p 3001:3000 backend-app:blue"'
+        sh 'ssh alex@192.168.0.242 "docker run -d --name backend-green -p 3002:3000 backend-app:green"'
+      }
     }
-    stage('Deploy Production') {
-      when { branch 'production' }
-      steps { sh 'ssh deploy@192.168.0.79 "docker pull backend-app:v001 && docker stop backend || true && docker rm backend || true && docker run -d --name backend -p 3000:3000 backend-app:v001"' }
+    stage('Test on Staging') {
+      steps {
+        sh 'ssh alex@192.168.0.242 "bash -s" < ./scripts/test-backend.sh'
+      }
+    }
+    stage('Deploy to Production') {
+      steps {
+        sh 'ssh alex@192.168.0.79 "docker stop backend-blue || true; docker rm backend-blue || true"'
+        sh 'ssh alex@192.168.0.79 "docker stop backend-green || true; docker rm backend-green || true"'
+        sh 'ssh alex@192.168.0.79 "docker run -d --name backend-blue -p 3001:3000 backend-app:blue"'
+        sh 'ssh alex@192.168.0.79 "docker run -d --name backend-green -p 3002:3000 backend-app:green"'
+      }
+    }
+    stage('Health-check & Switch') {
+      steps {
+        script {
+          def ok = sh(script: 'ssh alex@192.168.0.79 "bash -s" < ./scripts/test-backend.sh', returnStatus: true)
+          if (ok == 0) {
+            sh 'ssh alex@192.168.0.79 "bash -s" < ./nginx/switch-backend.sh green'
+          } else {
+            sh 'ssh alex@192.168.0.79 "bash -s" < ./nginx/switch-backend.sh blue'
+          }
+        }
+      }
     }
   }
 }
+
